@@ -1,7 +1,5 @@
-import tkinter as tk
-from gui import FereastraPrincipala
+from gui import FereastraCurier
 
 if __name__ == "__main__":
-    radacina = tk.Tk()
-    aplicatie = FereastraPrincipala(radacina)
-    radacina.mainloop()
+    app = FereastraCurier()
+    app.mainloop()
