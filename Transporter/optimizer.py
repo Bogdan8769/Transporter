@@ -1,49 +1,52 @@
 from distante import calculeaza_distanta_km
 
-def calculeaza_lungime_traseu(traseu):
-    """ Adună distanțele dintre toate punctele dintr-o listă în buclă închisă """
-    total = 0.0
-    for i in range(len(traseu) - 1):
-        total += calculeaza_distanta_km(traseu[i], traseu[i+1])
-    return total
 
-def ruleaza_tsp_cheapest_insertion(depozit, colete):
-    """
-    Rezolvă problema comis-voiajorului (TSP) cu întoarcere la depozit
-    folosind euristică de inserție ieftină (Cheapest Insertion).
-    """
-    if not colete:
-        return [depozit, depozit], 0.0, 0.0
+def calculeaza_lungime_traseu(traseu, distanta=calculeaza_distanta_km):
+    return sum(distanta(traseu[i], traseu[i + 1]) for i in range(len(traseu) - 1))
 
-    # Traseul fără AI (în ordinea în care au fost adăugate coletele)
+
+def program_livrari(traseu, plecare=480, distanta=calculeaza_distanta_km):
+    """35 km/h, 3 minute/opriere; dacă ajungem devreme, așteptăm."""
+    timp = plecare
+    program = []
+    for i in range(1, len(traseu) - 1):
+        colet = traseu[i]
+        sosire = timp + distanta(traseu[i - 1], colet) / 35 * 60
+        inceput = max(sosire, colet[5])
+        if inceput > colet[6]:
+            return None
+        program.append((inceput, inceput - sosire))
+        timp = inceput + 3
+    return program
+
+
+def ruleaza_tsp_cheapest_insertion(depozit, colete, plecare=480):
+    # Distanțele sunt memorate doar pentru acest calcul (inclusiv sensul drumului).
+    distante = {}
+
+    def distanta(a, b):
+        cheie = (a[0], a[1], b[0], b[1])
+        if cheie not in distante:
+            distante[cheie] = 0.0 if a[:2] == b[:2] else calculeaza_distanta_km(a, b)
+        return distante[cheie]
+
     traseu_simplu = [depozit] + list(colete) + [depozit]
-    km_neoptimizat = calculeaza_lungime_traseu(traseu_simplu)
-
-    # Algoritmul TSP: Pornim cu un circuit închis [depozit -> depozit]
-    traseu_optim = [depozit, depozit]
-
-    # Inserăm fiecare colet pe rând în poziția care mărește cel mai puțin drumul total
-    for colet in colete:
-        cel_mai_bun_index = 1
-        crestere_minima = float('inf')
-
-        for i in range(1, len(traseu_optim)):
-            p_inainte = traseu_optim[i - 1]
-            p_dupa = traseu_optim[i]
-
-            # Costul vechi între cele două puncte
-            dist_veche = calculeaza_distanta_km(p_inainte, p_dupa)
-            
-            # Costul nou dacă inserăm coletul între ele
-            dist_noua = calculeaza_distanta_km(p_inainte, colet) + calculeaza_distanta_km(colet, p_dupa)
-            
-            crestere = dist_noua - dist_veche
-
-            if crestere < crestere_minima:
-                crestere_minima = crestere
-                cel_mai_bun_index = i
-
-        traseu_optim.insert(cel_mai_bun_index, colet)
-
-    km_optim = calculeaza_lungime_traseu(traseu_optim)
-    return traseu_optim, km_optim, km_neoptimizat
+    km_simplu = calculeaza_lungime_traseu(traseu_simplu, distanta)
+    traseu = [depozit, depozit]
+    # Începem cu termenele cele mai apropiate.
+    for colet in sorted(colete, key=lambda c: c[6]):
+        cel_mai_bun = None
+        km_minim = float("inf")
+        for i in range(1, len(traseu)):
+            candidat = traseu[:i] + [colet] + traseu[i:]
+            if program_livrari(candidat, plecare, distanta) is None:
+                continue
+            km = calculeaza_lungime_traseu(candidat, distanta)
+            if km < km_minim:
+                km_minim, cel_mai_bun = km, candidat
+        if cel_mai_bun is None:
+            raise ValueError(f"Nu am găsit o inserție care respectă orele pentru {colet[2]}. "
+                             "Schimbă ora plecării sau intervalele. Euristica nu verifică toate ordonările.")
+        traseu = cel_mai_bun
+    program = program_livrari(traseu, plecare, distanta)
+    return traseu, calculeaza_lungime_traseu(traseu, distanta), km_simplu, program

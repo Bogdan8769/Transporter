@@ -1,5 +1,7 @@
 import customtkinter as ctk
 import tkintermapview
+from tkinter import filedialog, messagebox
+from colete import date_colet, citeste_csv, ora_in_minute, format_ora
 from distante import gaseste_coordonate_adresa, obtine_drum_pe_strazi
 from optimizer import ruleaza_tsp_cheapest_insertion
 
@@ -18,7 +20,7 @@ class FereastraCurier(ctk.CTk):
         self.linie_harta = None
 
         # --- PANOU LATERAL STÂNGA ---
-        self.meniu = ctk.CTkFrame(self, width=360, corner_radius=0)
+        self.meniu = ctk.CTkScrollableFrame(self, width=360, corner_radius=0)
         self.meniu.pack(side="left", fill="y")
 
         self.titlu = ctk.CTkLabel(self.meniu, text="🚚 Transporter AI", font=("Arial", 22, "bold"))
@@ -44,6 +46,21 @@ class FereastraCurier(ctk.CTk):
             height=35, font=("Arial", 12, "bold"), command=self.adauga_adresa_actiune
         )
         self.btn_adauga.pack(fill="x", padx=15, pady=5)
+
+        # Câmpuri simple: kg, m³ și intervalul în aceeași zi.
+        self.campuri_colet = []
+        for eticheta, valoare in [("Greutate (kg)", "1"), ("Volum (m³)", "0.01"),
+                                  ("Livrare de la (HH:MM)", "08:00"), ("Livrare până la (HH:MM)", "18:00")]:
+            ctk.CTkLabel(self.meniu, text=eticheta).pack(anchor="w", padx=15)
+            camp = ctk.CTkEntry(self.meniu)
+            camp.insert(0, valoare)
+            camp.pack(fill="x", padx=15, pady=2)
+            self.campuri_colet.append(camp)
+        ctk.CTkLabel(self.meniu, text="Plecare din depozit (HH:MM)").pack(anchor="w", padx=15)
+        self.camp_plecare = ctk.CTkEntry(self.meniu)
+        self.camp_plecare.insert(0, "08:00")
+        self.camp_plecare.pack(fill="x", padx=15, pady=2)
+        ctk.CTkButton(self.meniu, text="Importă colete CSV", command=self.importa_csv).pack(fill="x", padx=15, pady=8)
 
         # Buton Principal AI
         self.btn_calculeaza = ctk.CTkButton(
@@ -108,20 +125,28 @@ class FereastraCurier(ctk.CTk):
         else:
             self.harta.set_tile_server("https://mt0.google.com/vt/lyrs=y&hl=ro&x={x}&y={y}&z={z}&s=Ga", max_zoom=22)
 
-    def adauga_punct_hartas(self, lat, lon, nume):
+    def adauga_punct_hartas(self, lat, lon, nume, date=None):
         if self.depozit is None:
             self.depozit = [lat, lon, f"Depozit ({nume})"]
             m = self.harta.set_marker(lat, lon, text=f"🏢 DEPOZIT: {nume}", marker_color_circle="#1f538d", marker_color_outside="#2980b9")
             self.markere.append(m)
             self.lbl_status_ghid.configure(text="Pasul 2: Adaugă adresele COLETELOR", text_color="#e67e22")
         else:
+            if date is None:
+                try:
+                    date = date_colet(*(c.get() for c in self.campuri_colet))
+                except ValueError as eroare:
+                    messagebox.showerror("Date colet", str(eroare))
+                    return
             nr = len(self.colete) + 1
             eticheta = f"Colet {nr}: {nume}"
-            self.colete.append([lat, lon, eticheta])
+            self.colete.append([lat, lon, eticheta] + date)
+            self.invalideaza_traseu()
             m = self.harta.set_marker(lat, lon, text=f"📦 {eticheta}", marker_color_circle="#d35400", marker_color_outside="#e67e22")
             self.markere.append(m)
             self.lbl_status_ghid.configure(text=f"✅ {nr} colete înregistrate.", text_color="#2ecc71")
         
+        self.reface_markere()
         self.actualizeaza_text_box()
 
     def adauga_adresa_actiune(self):
@@ -153,7 +178,7 @@ class FereastraCurier(ctk.CTk):
         if self.depozit:
             self.text_itinerariu.insert("end", f"🏢 START: {self.depozit[2]}\n")
         for c in self.colete:
-            self.text_itinerariu.insert("end", f"  • {c[2]}\n")
+            self.text_itinerariu.insert("end", f"  • {c[2]} | {c[3]:g} kg | {c[4]:g} m³ | {format_ora(c[5])}–{format_ora(c[6])}\n")
 
     def calculeaza_traseu_actiune(self):
         if not self.depozit or not self.colete:
@@ -163,7 +188,14 @@ class FereastraCurier(ctk.CTk):
         self.lbl_status_ghid.configure(text="⏳ Rulam algoritmul TSP pe șosele...", text_color="#f1c40f")
         self.update()
 
-        traseu_optim, km_optim, km_neoptimizat = ruleaza_tsp_cheapest_insertion(self.depozit, self.colete)
+        self.invalideaza_traseu()
+        try:
+            plecare = ora_in_minute(self.camp_plecare.get())
+            traseu_optim, km_optim, km_neoptimizat, program = ruleaza_tsp_cheapest_insertion(self.depozit, self.colete, plecare)
+        except ValueError as eroare:
+            self.lbl_status_ghid.configure(text="Nu s-a găsit un traseu valid.", text_color="#e74c3c")
+            messagebox.showerror("Traseu", str(eroare))
+            return
         puncte_sosea = obtine_drum_pe_strazi(traseu_optim)
 
         if self.linie_harta:
@@ -183,20 +215,21 @@ class FereastraCurier(ctk.CTk):
 
         for pas in range(1, len(traseu_optim) - 1):
             oprire = traseu_optim[pas]
-            self.text_itinerariu.insert("end", f"{pas}. LIVRARE -> {oprire[2]}\n")
+            self.text_itinerariu.insert("end", f"{pas}. {oprire[2]} | {oprire[3]:g} kg | {oprire[4]:g} m³\n   Livrare: {format_ora(program[pas-1][0])}, așteptare {program[pas-1][1]:.0f} min\n")
             m = self.harta.set_marker(oprire[0], oprire[1], text=f"Oprirea #{pas} ({oprire[2]})", marker_color_circle="#1e8449", marker_color_outside="#2ecc71")
             self.markere.append(m)
 
         self.text_itinerariu.insert("end", f"{len(traseu_optim)-1}. SOSIRE: {self.depozit[2]}")
 
         # Statistici avansate
-        economie = max(0.0, km_neoptimizat - km_optim)
-        minute = int((km_optim / 35.0) * 60) + (len(self.colete) * 3)
+        economie = km_neoptimizat - km_optim
+        minute = int((km_optim / 35.0) * 60) + (len(self.colete) * 3) + sum(p[1] for p in program)
         cost_ron = ((km_optim * 8.0) / 100.0) * 7.5
 
         self.lbl_statistici.configure(
             text=f"Traseu AI: {km_optim:.2f} km (Economisit: {economie:.2f} km)\n"
-                 f"Timp: ~{minute} min | Cost combustibil: {cost_ron:.2f} RON"
+                 f"Timp: ~{minute:.0f} min | Combustibil: {cost_ron:.2f} RON\n"
+                 f"Total: {sum(c[3] for c in self.colete):g} kg | {sum(c[4] for c in self.colete):g} m³"
         )
         self.lbl_status_ghid.configure(text="✅ Traseu optimizat cu succes!", text_color="#2ecc71")
 
@@ -210,9 +243,43 @@ class FereastraCurier(ctk.CTk):
             (47.6415, 23.5843, "Gara CFR Baia Mare")
         ]
         for lat, lon, nume in demo:
-            self.adauga_punct_hartas(lat, lon, nume)
+            self.adauga_punct_hartas(lat, lon, nume, [2.0, 0.02, 480, 1080])
         self.harta.set_position(47.6540, 23.5700)
         self.harta.set_zoom(13)
+
+    def invalideaza_traseu(self):
+        self.actualizeaza_text_box()
+        if self.linie_harta:
+            self.linie_harta.delete()
+            self.linie_harta = None
+        self.lbl_statistici.configure(text=f"Total: {sum(c[3] for c in self.colete):g} kg | "
+                                          f"{sum(c[4] for c in self.colete):g} m³\nRecalculează traseul după modificări.")
+
+    def reface_markere(self):
+        for marker in self.markere:
+            marker.delete()
+        self.markere.clear()
+        puncte = ([self.depozit] if self.depozit else []) + self.colete
+        for punct in puncte:
+            self.markere.append(self.harta.set_marker(punct[0], punct[1], text=punct[2]))
+
+    def importa_csv(self):
+        if self.depozit is None:
+            messagebox.showinfo("Import", "Adaugă mai întâi depozitul pe hartă.")
+            return
+        cale = filedialog.askopenfilename(filetypes=[("Lista colete", "*.csv")])
+        if not cale:
+            return
+        try:
+            colete_noi = citeste_csv(cale, gaseste_coordonate_adresa)
+        except (OSError, ValueError, UnicodeError) as eroare:
+            messagebox.showerror("Import nereușit", str(eroare))
+            return
+        self.colete.extend(colete_noi)
+        self.invalideaza_traseu()
+        self.reface_markere()
+        self.actualizeaza_text_box()
+        self.lbl_status_ghid.configure(text=f"Importate {len(colete_noi)} colete.", text_color="#2ecc71")
 
     def salveaza_txt(self):
         continut = self.text_itinerariu.get("0.0", "end").strip()
@@ -223,7 +290,8 @@ class FereastraCurier(ctk.CTk):
     def sterge_ultimul(self):
         if self.colete:
             self.colete.pop()
-            self.markere.pop().delete()
+            self.reface_markere()
+            self.invalideaza_traseu()
             self.actualizeaza_text_box()
         elif self.depozit:
             self.depozit = None
